@@ -233,7 +233,7 @@ func (s *ConfigSuite) TestLoadConfigXDG(c *C) {
 	err = util.WriteFile(osfs.Default, cfgFile, content, 0777)
 	c.Assert(err, IsNil)
 
-	cfg, err = LoadConfig(GlobalScope)
+	cfg, err = LoadConfig(XDGConfigHomeScope)
 	c.Assert(err, IsNil)
 
 	c.Assert(cfg.User.Email, Equals, "foo@foo.com")

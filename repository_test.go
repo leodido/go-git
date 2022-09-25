@@ -373,11 +373,11 @@ func (s *RepositorySuite) TestCreateBranchUnmarshal(c *C) {
 	err = r.CreateBranch(testBranch2)
 	c.Assert(err, IsNil)
 
-	cfg, err := r.Config()
+	cfg, err := r.ConfigScoped(config.LocalScope)
 	c.Assert(err, IsNil)
 	marshaled, err := cfg.Marshal()
 	c.Assert(err, IsNil)
-	c.Assert(string(expected), Equals, string(marshaled))
+	c.Assert(string(marshaled), Equals, string(expected))
 }
 
 func (s *RepositorySuite) TestBranchInvalid(c *C) {
@@ -1981,7 +1981,8 @@ func (s *RepositorySuite) TestConfigScoped(c *C) {
 	c.Assert(err, IsNil)
 	c.Assert(cfg.User.Email, Equals, "")
 
-	cfg, err = r.ConfigScoped(config.SystemScope)
+	// this is an assumption that ~/.gitconfig specifies a user email
+	cfg, err = r.ConfigScoped(config.GlobalScope)
 	c.Assert(err, IsNil)
 	c.Assert(cfg.User.Email, Not(Equals), "")
 }

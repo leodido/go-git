@@ -504,7 +504,7 @@ func (o *CommitOptions) Validate(r *Repository) error {
 }
 
 func (o *CommitOptions) loadConfigAuthorAndCommitter(r *Repository) error {
-	cfg, err := r.ConfigScoped(config.SystemScope)
+	cfg, err := r.Config()
 	if err != nil {
 		return err
 	}
@@ -579,7 +579,7 @@ func (o *CreateTagOptions) Validate(r *Repository, hash plumbing.Hash) error {
 }
 
 func (o *CreateTagOptions) loadConfigTagger(r *Repository) error {
-	cfg, err := r.ConfigScoped(config.SystemScope)
+	cfg, err := r.Config()
 	if err != nil {
 		return err
 	}

@@ -1,5 +1,7 @@
 package config
 
+import "strings"
+
 // New creates a new config instance.
 func New() *Config {
 	return &Config{}
@@ -106,4 +108,20 @@ func (c *Config) SetOption(section string, subsection string, key string, value 
 	}
 
 	return c
+}
+
+// SetOptionSimple allows setting an option using git CLI syntax
+// of "git config section.key val"
+// or "git config section.subsection.key val"
+func (c *Config) SetOptionSimple(key, val string) *Config {
+	// parse section, subsection, and key
+	parts := strings.Split(key, ".")
+	if len(parts) < 2 {
+		parts = append(parts, "")
+	}
+	if len(parts) < 3 {
+		parts = append(parts, "")
+	}
+
+	return c.SetOption(parts[0], parts[1], parts[2], val)
 }

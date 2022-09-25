@@ -158,13 +158,9 @@ func setConfigWorktree(r *Repository, worktree, storage billy.Filesystem) error 
 		return nil
 	}
 
-	cfg, err := r.Config()
-	if err != nil {
-		return err
-	}
-
-	cfg.Core.Worktree = path
-	return r.Storer.SetConfig(cfg)
+	return r.SetConfigValueScopedFunc(config.LocalScope, func(cfg *config.Config) {
+		cfg.Core.Worktree = path
+	})
 }
 
 // Open opens a git repository using the given Storer and worktree filesystem,
@@ -475,56 +471,142 @@ func cleanUpDir(path string, all bool) error {
 	return err
 }
 
-// Config return the repository config. In a filesystem backed repository this
-// means read the `.git/config`.
+// Config return the merged config for this Repository. In a filesystem backed repository this
+// means read the system config, then merge in ~/.gitconfig, then merge in `.git/config`
 func (r *Repository) Config() (*config.Config, error) {
-	return r.Storer.Config()
+	systemConfig, err := config.LoadConfig(config.SystemScope)
+	if err != nil {
+		return nil, fmt.Errorf("load system config: %#v", err)
+	}
+
+	xdgConfig, err := config.LoadConfig(config.XDGConfigHomeScope)
+	if err != nil {
+		xdgConfig = config.NewConfig()
+	}
+
+	globalConfig, err := config.LoadConfig(config.GlobalScope)
+	if err != nil {
+		return nil, fmt.Errorf("load global config: %#v", err)
+	}
+
+	localConfig, err := r.Storer.Config()
+	if err != nil {
+		return nil, fmt.Errorf("load local config from storer: %#v", err)
+	}
+
+	// create a new empty config to hold merged values
+	mergedConfig := config.NewConfig()
+	if err = mergo.Merge(mergedConfig, systemConfig, mergo.WithOverride); err != nil {
+		return nil, fmt.Errorf("merging system config: %#v", err)
+	}
+	if err = mergo.Merge(mergedConfig, xdgConfig, mergo.WithOverride); err != nil {
+		return nil, fmt.Errorf("merging XDG_CONFIG_HOME config: %#v", err)
+	}
+	if err = mergo.Merge(mergedConfig, globalConfig, mergo.WithOverride); err != nil {
+		return nil, fmt.Errorf("merging global config: %#v", err)
+	}
+	if err = mergo.Merge(mergedConfig, localConfig, mergo.WithOverride); err != nil {
+		return nil, fmt.Errorf("merging local config: %#v", err)
+	}
+
+	return mergedConfig, nil
 }
 
 // SetConfig marshall and writes the repository config. In a filesystem backed
 // repository this means write the `.git/config`. This function should be called
-// with the result of `Repository.Config` and never with the output of
-// `Repository.ConfigScoped`.
+// with the result of `Repository.ConfigScoped(config.LocalScope)` and never with
+// the output of `Repository.Config()`.
+// - WARNING: overwrites local config with whatever config you pass in.
 func (r *Repository) SetConfig(cfg *config.Config) error {
 	return r.Storer.SetConfig(cfg)
 }
 
-// ConfigScoped returns the repository config, merged with requested scope and
+// ConfigScoped returns the git configuration from the requested scope, similar
+// to passing --local, --global, or --system to the 'git config' CLI command.
 // lower. For example if, config.GlobalScope is given the local and global config
 // are returned merged in one config value.
 func (r *Repository) ConfigScoped(scope config.Scope) (*config.Config, error) {
 	// TODO(mcuadros): v6, add this as ConfigOptions.Scoped
-
-	var err error
-	system := config.NewConfig()
-	if scope >= config.SystemScope {
-		system, err = config.LoadConfig(config.SystemScope)
-		if err != nil {
-			return nil, err
-		}
+	switch scope {
+	case config.SystemScope:
+		return config.LoadConfig(config.SystemScope)
+	case config.XDGConfigHomeScope:
+		return config.LoadConfig(config.XDGConfigHomeScope)
+	case config.GlobalScope:
+		return config.LoadConfig(config.GlobalScope)
+	case config.LocalScope:
+		return r.Storer.Config()
+	default:
+		return nil, fmt.Errorf("scope '%s' not supported", scope)
 	}
+}
 
-	global := config.NewConfig()
-	if scope >= config.GlobalScope {
-		global, err = config.LoadConfig(config.GlobalScope)
-		if err != nil {
-			return nil, err
-		}
-	}
+// SetConfigValue sets a config value in the local repository
+// from git docs https://git-scm.com/docs/git-config/2.37.2#_description:
+//    When writing, the new value is written to the repository
+//    local configuration file by default, and options --system,
+//    --global, --worktree, --file <filename> can be used to tell
+//   the command to write to that location (you can say --local
+//   but that is the default).
+func (r *Repository) SetConfigValue(key, val string) error {
+	return r.SetConfigValueScoped(key, val, config.LocalScope)
+}
 
-	local, err := r.Storer.Config()
+// SetConfigValueScoped sets a config value in the given scope
+func (r *Repository) SetConfigValueScoped(key, val string, scope config.Scope) error {
+	return r.SetConfigValueScopedFuncE(scope, func(c *config.Config) error {
+		c.Raw.SetOptionSimple(key, val)
+		return nil
+	})
+}
+
+// SetConfigValueFunc sets a config value in the local scope
+// using the given fn to modify the config object
+func (r *Repository) SetConfigValueFunc(fn func(c *config.Config)) error {
+	return r.SetConfigValueScopedFunc(config.LocalScope, fn)
+}
+
+// SetConfigValueScopedFunc sets a config value in the given scope
+// using the given fn to modify the config object
+func (r *Repository) SetConfigValueScopedFunc(scope config.Scope, fn func(c *config.Config)) error {
+	return r.SetConfigValueScopedFuncE(scope, func(c *config.Config) error {
+		fn(c)
+		return nil
+	})
+}
+
+// SetConfigValueFuncE sets a config value in the local scope
+// using the given fn to modify the config object
+func (r *Repository) SetConfigValueFuncE(fn func(c *config.Config) error) error {
+	return r.SetConfigValueScopedFuncE(config.LocalScope, fn)
+}
+
+// SetConfigValueScopedFuncE sets a config value in the given scope
+// using the given fn to modify the config object
+func (r *Repository) SetConfigValueScopedFuncE(scope config.Scope, fn func(c *config.Config) error) error {
+	cfg, err := r.ConfigScoped(scope)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	_ = mergo.Merge(global, system)
-	_ = mergo.Merge(local, global)
-	return local, nil
+	err = fn(cfg)
+	if err != nil {
+		return err
+	}
+
+	switch scope {
+	case config.LocalScope:
+		return r.Storer.SetConfig(cfg)
+	default:
+		return fmt.Errorf("writing to %#v scope is not yet supported", scope)
+	}
+
+	return nil
 }
 
 // Remote return a remote if exists
 func (r *Repository) Remote(name string) (*Remote, error) {
-	cfg, err := r.Config()
+	cfg, err := r.ConfigScoped(config.LocalScope)
 	if err != nil {
 		return nil, err
 	}
@@ -539,7 +621,7 @@ func (r *Repository) Remote(name string) (*Remote, error) {
 
 // Remotes returns a list with all the remotes
 func (r *Repository) Remotes() ([]*Remote, error) {
-	cfg, err := r.Config()
+	cfg, err := r.ConfigScoped(config.LocalScope)
 	if err != nil {
 		return nil, err
 	}
@@ -563,17 +645,16 @@ func (r *Repository) CreateRemote(c *config.RemoteConfig) (*Remote, error) {
 
 	remote := NewRemote(r.Storer, c)
 
-	cfg, err := r.Config()
-	if err != nil {
-		return nil, err
-	}
+	err := r.SetConfigValueScopedFuncE(config.LocalScope, func(cfg *config.Config) error {
+		if _, ok := cfg.Remotes[c.Name]; ok {
+			return ErrRemoteExists
+		}
 
-	if _, ok := cfg.Remotes[c.Name]; ok {
-		return nil, ErrRemoteExists
-	}
+		cfg.Remotes[c.Name] = c
 
-	cfg.Remotes[c.Name] = c
-	return remote, r.Storer.SetConfig(cfg)
+		return nil
+	})
+	return remote, err
 }
 
 // CreateRemoteAnonymous creates a new anonymous remote. c.Name must be "anonymous".
@@ -594,22 +675,20 @@ func (r *Repository) CreateRemoteAnonymous(c *config.RemoteConfig) (*Remote, err
 
 // DeleteRemote delete a remote from the repository and delete the config
 func (r *Repository) DeleteRemote(name string) error {
-	cfg, err := r.Config()
-	if err != nil {
-		return err
-	}
+	return r.SetConfigValueScopedFuncE(config.LocalScope, func(cfg *config.Config) error {
+		if _, ok := cfg.Remotes[name]; !ok {
+			return ErrRemoteNotFound
+		}
 
-	if _, ok := cfg.Remotes[name]; !ok {
-		return ErrRemoteNotFound
-	}
+		delete(cfg.Remotes, name)
 
-	delete(cfg.Remotes, name)
-	return r.Storer.SetConfig(cfg)
+		return nil
+	})
 }
 
 // Branch return a Branch if exists
 func (r *Repository) Branch(name string) (*config.Branch, error) {
-	cfg, err := r.Config()
+	cfg, err := r.ConfigScoped(config.LocalScope)
 	if err != nil {
 		return nil, err
 	}
@@ -628,32 +707,28 @@ func (r *Repository) CreateBranch(c *config.Branch) error {
 		return err
 	}
 
-	cfg, err := r.Config()
-	if err != nil {
-		return err
-	}
+	return r.SetConfigValueScopedFuncE(config.LocalScope, func(cfg *config.Config) error {
+		if _, ok := cfg.Branches[c.Name]; ok {
+			return ErrBranchExists
+		}
 
-	if _, ok := cfg.Branches[c.Name]; ok {
-		return ErrBranchExists
-	}
+		cfg.Branches[c.Name] = c
 
-	cfg.Branches[c.Name] = c
-	return r.Storer.SetConfig(cfg)
+		return nil
+	})
 }
 
 // DeleteBranch delete a Branch from the repository and delete the config
 func (r *Repository) DeleteBranch(name string) error {
-	cfg, err := r.Config()
-	if err != nil {
-		return err
-	}
+	return r.SetConfigValueScopedFuncE(config.LocalScope, func(cfg *config.Config) error {
+		if _, ok := cfg.Branches[name]; !ok {
+			return ErrBranchNotFound
+		}
 
-	if _, ok := cfg.Branches[name]; !ok {
-		return ErrBranchNotFound
-	}
+		delete(cfg.Branches, name)
 
-	delete(cfg.Branches, name)
-	return r.Storer.SetConfig(cfg)
+		return nil
+	})
 }
 
 // CreateTag creates a tag. If opts is included, the tag is an annotated tag,
@@ -922,13 +997,9 @@ func (r *Repository) cloneRefSpec(o *CloneOptions) []config.RefSpec {
 }
 
 func (r *Repository) setIsBare(isBare bool) error {
-	cfg, err := r.Config()
-	if err != nil {
-		return err
-	}
-
-	cfg.Core.IsBare = isBare
-	return r.Storer.SetConfig(cfg)
+	return r.SetConfigValueScopedFunc(config.LocalScope, func(c *config.Config) {
+		c.Core.IsBare = isBare
+	})
 }
 
 func (r *Repository) updateRemoteConfigIfNeeded(o *CloneOptions, c *config.RemoteConfig, head *plumbing.Reference) error {
@@ -938,13 +1009,9 @@ func (r *Repository) updateRemoteConfigIfNeeded(o *CloneOptions, c *config.Remot
 
 	c.Fetch = r.cloneRefSpec(o)
 
-	cfg, err := r.Config()
-	if err != nil {
-		return err
-	}
-
-	cfg.Remotes[c.Name] = c
-	return r.Storer.SetConfig(cfg)
+	return r.SetConfigValueScopedFunc(config.LocalScope, func(cfg *config.Config) {
+		cfg.Remotes[c.Name] = c
+	})
 }
 
 func (r *Repository) fetchAndUpdateReferences(
@@ -1667,7 +1734,7 @@ func (r *Repository) createNewObjectPack(cfg *RepackConfig) (h plumbing.Hash, er
 		return h, err
 	}
 	defer ioutil.CheckClose(wc, &err)
-	scfg, err := r.Config()
+	scfg, err := r.ConfigScoped(config.LocalScope)
 	if err != nil {
 		return h, err
 	}

@@ -2,6 +2,8 @@ package git
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/go-git/go-billy/v5/util"
 	"github.com/go-git/go-git/v5/config"
@@ -92,14 +94,20 @@ func (s *OptionsSuite) TestCreateTagOptionsLoadGlobal(c *C) {
 
 func (s *OptionsSuite) writeGlobalConfig(c *C, cfg *config.Config) func() {
 	fs, clean := s.TemporalFilesystem()
+	config.ActiveFS = fs
 
 	tmp, err := util.TempDir(fs, "", "test-options")
 	c.Assert(err, IsNil)
 
+	if !strings.HasPrefix(tmp, "/") {
+		// use absolute fs-rooted paths in tests to ensure consistency
+		tmp = filepath.Join(fs.Root(), tmp)
+	}
+
 	err = fs.MkdirAll(fs.Join(tmp, "git"), 0777)
 	c.Assert(err, IsNil)
 
-	os.Setenv("XDG_CONFIG_HOME", fs.Join(fs.Root(), tmp))
+	os.Setenv("XDG_CONFIG_HOME", tmp)
 
 	content, err := cfg.Marshal()
 	c.Assert(err, IsNil)
@@ -110,7 +118,7 @@ func (s *OptionsSuite) writeGlobalConfig(c *C, cfg *config.Config) func() {
 
 	return func() {
 		clean()
+		config.ActiveFS = config.DefaultFS()
 		os.Setenv("XDG_CONFIG_HOME", "")
-
 	}
 }

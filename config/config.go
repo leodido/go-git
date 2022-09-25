@@ -28,7 +28,7 @@ const (
 // ConfigStorer generic storage of Config object
 type ConfigStorer interface {
 	Config() (*Config, error)
-	SetConfig(*Config) error
+	SetConfig(*Config) error // WARNING: saves a copy of merged config locally
 }
 
 var (
@@ -54,10 +54,27 @@ type Scope int
 
 // Available ConfigScope's
 const (
-	LocalScope Scope = iota
+	SystemScope Scope = iota
+	XDGConfigHomeScope
 	GlobalScope
-	SystemScope
+	LocalScope
 )
+
+// String implements Stringer for Scope
+func (s Scope) String() string {
+	switch s {
+	case SystemScope:
+		return "system"
+	case XDGConfigHomeScope:
+		return "XDG_CONFIG_HOME"
+	case GlobalScope:
+		return "global"
+	case LocalScope:
+		return "local"
+	default:
+		return "n/a"
+	}
+}
 
 // Config contains the repository configuration
 // https://www.kernel.org/pub/software/scm/git/docs/git-config.html#FILES
@@ -160,10 +177,6 @@ func ReadConfig(r io.Reader) (*Config, error) {
 // contains exclusively information fom the given scope. If couldn't find a
 // config file to the given scope, a empty one is returned.
 func LoadConfig(scope Scope) (*Config, error) {
-	if scope == LocalScope {
-		return nil, fmt.Errorf("LocalScope should be read from the a ConfigStorer")
-	}
-
 	files, err := Paths(scope)
 	if err != nil {
 		return nil, err
@@ -187,29 +200,28 @@ func LoadConfig(scope Scope) (*Config, error) {
 }
 
 // Paths returns the config file location for a given scope.
+// see: https://git-scm.com/docs/git-config/2.37.2#FILES
 func Paths(scope Scope) ([]string, error) {
-	var files []string
-	switch scope {
-	case GlobalScope:
-		xdg := os.Getenv("XDG_CONFIG_HOME")
-		if xdg != "" {
-			files = append(files, filepath.Join(xdg, "git/config"))
-		}
-
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, err
-		}
-
-		files = append(files,
-			filepath.Join(home, ".gitconfig"),
-			filepath.Join(home, ".config/git/config"),
-		)
-	case SystemScope:
-		files = append(files, "/etc/gitconfig")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
 	}
 
-	return files, nil
+	switch scope {
+	case SystemScope:
+		return []string{"/etc/gitconfig"}, nil
+	case XDGConfigHomeScope:
+		if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+			return []string{filepath.Join(xdg, "git/config")}, nil
+		}
+		return []string{filepath.Join(home, ".config", "git", "config")}, nil
+	case GlobalScope:
+		return []string{filepath.Join(home, ".gitconfig")}, nil
+	case LocalScope:
+		return nil, fmt.Errorf("LocalScope should be read from the ConfigStorer")
+	default:
+		return nil, fmt.Errorf("unsupported config scope: %#v", scope)
+	}
 }
 
 // Validate validates the fields and sets the default values.
